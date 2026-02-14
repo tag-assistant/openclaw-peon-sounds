@@ -1,36 +1,55 @@
 #!/bin/bash
-# Play a peon sound by category
-# Usage: play.sh <greeting|complete|permission|error|warcry>
+# Play a sound from peon-ping's installed packs
+# Usage: play.sh <cesp_category>
+# Categories: session.start, task.acknowledge, task.complete, task.error, input.required, user.spam
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOUND_DIR="$SCRIPT_DIR/sounds"
+PEON_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/peon-ping"
+CONFIG="$PEON_DIR/config.json"
 
-if [ ! -d "$SOUND_DIR" ]; then
-  echo "Sounds not installed. Run: bash $SCRIPT_DIR/install.sh" >&2
+if [ ! -f "$CONFIG" ]; then
+  # Fallback to openpeon shared path
+  PEON_DIR="$HOME/.openpeon"
+  CONFIG="$PEON_DIR/config.json"
+fi
+
+if [ ! -f "$CONFIG" ]; then
+  echo "peon-ping not installed. Run: brew install PeonPing/tap/peon-ping && peon-ping-setup" >&2
   exit 1
 fi
 
-case "$1" in
-  greeting|ready)
-    afplay "$SOUND_DIR/ready.ogg" &
-    ;;
-  complete|done|acknowledge)
-    files=("$SOUND_DIR"/acknowledge*.ogg)
-    afplay "${files[RANDOM % ${#files[@]}]}" &
-    ;;
-  permission|input|waiting)
-    files=("$SOUND_DIR"/permission*.ogg)
-    afplay "${files[RANDOM % ${#files[@]}]}" &
-    ;;
-  error|fail)
-    files=("$SOUND_DIR"/error*.ogg)
-    afplay "${files[RANDOM % ${#files[@]}]}" &
-    ;;
-  warcry|hype)
-    afplay "$SOUND_DIR/warcry.ogg" &
-    ;;
-  *)
-    echo "Usage: play.sh {greeting|complete|permission|error|warcry}" >&2
-    exit 1
-    ;;
+CATEGORY="${1:-task.complete}"
+
+# Map short aliases to CESP categories
+case "$CATEGORY" in
+  greeting|ready|start) CATEGORY="session.start" ;;
+  complete|done) CATEGORY="task.complete" ;;
+  acknowledge|ack) CATEGORY="task.acknowledge" ;;
+  error|fail) CATEGORY="task.error" ;;
+  permission|input|waiting) CATEGORY="input.required" ;;
+  annoyed|spam) CATEGORY="user.spam" ;;
 esac
+
+# Pick and play a random sound from the category
+FILE=$(python3 -c "
+import json, random, os
+peon_dir = '$PEON_DIR'
+config = json.load(open('$CONFIG'))
+pack = config.get('active_pack', 'peon')
+pack_dir = os.path.join(peon_dir, 'packs', pack)
+manifest_path = os.path.join(pack_dir, 'openpeon.json')
+if not os.path.exists(manifest_path):
+    manifest_path = os.path.join(pack_dir, 'manifest.json')
+manifest = json.load(open(manifest_path))
+sounds = manifest.get('categories', {}).get('$CATEGORY', {}).get('sounds', [])
+if sounds:
+    pick = random.choice(sounds)
+    print(os.path.join(pack_dir, pick['file']))
+" 2>/dev/null)
+
+if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+  VOL=$(python3 -c "import json;print(json.load(open('$CONFIG')).get('volume',0.5))" 2>/dev/null || echo "0.5")
+  afplay -v "$VOL" "$FILE" &
+else
+  echo "No sounds found for category: $CATEGORY" >&2
+  exit 1
+fi
